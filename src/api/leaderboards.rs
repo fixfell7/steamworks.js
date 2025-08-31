@@ -155,7 +155,7 @@ pub mod leaderboards {
         // Get the leaderboard handle without holding the lock across await
         let leaderboard = {
             let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
-            handles.get(&leaderboard_name).copied()
+            handles.get(&leaderboard_name).cloned()
         };
 
         if let Some(leaderboard) = leaderboard {
@@ -204,7 +204,7 @@ pub mod leaderboards {
         // Get the leaderboard handle without holding the lock across await
         let leaderboard = {
             let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
-            handles.get(&leaderboard_name).copied()
+            handles.get(&leaderboard_name).cloned()
         };
 
         if let Some(leaderboard) = leaderboard {
@@ -220,8 +220,9 @@ pub mod leaderboards {
             client.user_stats().download_leaderboard_entries(
                 &leaderboard,
                 request_type,
-                range_start,
-                range_end,
+                range_start as usize,
+                range_end as usize,
+                0, // max_detail_data_size - 0 means no details
                 move |result| {
                     if let Some(sender) = tx.take() {
                         let _ = sender.send(result);
