@@ -6,8 +6,8 @@ pub mod leaderboards {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use steamworks::{
-        LeaderboardDisplayType, LeaderboardEntry, Leaderboard, LeaderboardSortMethod, SteamId,
-        LeaderboardDataRequest, UploadScoreMethod,
+        LeaderboardDisplayType, LeaderboardEntry as SteamLeaderboardEntry, Leaderboard, 
+        LeaderboardSortMethod, SteamId, LeaderboardDataRequest, UploadScoreMethod as SteamUploadScoreMethod,
     };
     use tokio::sync::oneshot;
 
@@ -70,8 +70,17 @@ pub mod leaderboards {
         }
     }
 
-    impl From<steamworks::LeaderboardEntry> for LeaderboardEntry {
-        fn from(entry: steamworks::LeaderboardEntry) -> Self {
+    impl From<UploadScoreMethod> for SteamUploadScoreMethod {
+        fn from(method: UploadScoreMethod) -> Self {
+            match method {
+                UploadScoreMethod::KeepBest => SteamUploadScoreMethod::KeepBest,
+                UploadScoreMethod::ForceUpdate => SteamUploadScoreMethod::ForceUpdate,
+            }
+        }
+    }
+
+    impl From<SteamLeaderboardEntry> for LeaderboardEntry {
+        fn from(entry: SteamLeaderboardEntry) -> Self {
             LeaderboardEntry {
                 global_rank: entry.global_rank,
                 score: entry.score,
@@ -94,7 +103,7 @@ pub mod leaderboards {
         });
 
         match rx.await {
-            Ok(Ok(leaderboard)) => {
+            Ok(Ok(Some(leaderboard))) => {
                 let mut handles = (*LEADERBOARD_HANDLES).lock().unwrap();
                 handles.insert(name.clone(), leaderboard);
                 Some(name)
@@ -125,7 +134,7 @@ pub mod leaderboards {
         );
 
         match rx.await {
-            Ok(Ok(leaderboard)) => {
+            Ok(Ok(Some(leaderboard))) => {
                 let mut handles = (*LEADERBOARD_HANDLES).lock().unwrap();
                 handles.insert(name.clone(), leaderboard);
                 Some(name)
@@ -142,21 +151,21 @@ pub mod leaderboards {
         details: Option<Vec<i32>>,
     ) -> Option<LeaderboardEntry> {
         let client = crate::client::get_client();
-        let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
+        
+        // Get the leaderboard handle without holding the lock across await
+        let leaderboard = {
+            let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
+            handles.get(&leaderboard_name).copied()
+        };
 
-        if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            let method = match upload_method {
-                UploadScoreMethod::KeepBest => UploadScoreMethod::KeepBest,
-                UploadScoreMethod::ForceUpdate => UploadScoreMethod::ForceUpdate,
-            };
-
+        if let Some(leaderboard) = leaderboard {
             let score_details = details.unwrap_or_default();
             let (tx, rx) = oneshot::channel();
             let mut tx = Some(tx);
 
             client.user_stats().upload_leaderboard_score(
-                leaderboard,
-                method,
+                &leaderboard,
+                upload_method.into(),
                 score,
                 &score_details,
                 move |result| {
@@ -167,7 +176,7 @@ pub mod leaderboards {
             );
 
             match rx.await {
-                Ok(Ok(result)) => {
+                Ok(Ok(Some(result))) => {
                     // Create a LeaderboardEntry from the result
                     Some(LeaderboardEntry {
                         global_rank: result.global_rank_new,
@@ -191,9 +200,14 @@ pub mod leaderboards {
         range_end: i32,
     ) -> Vec<LeaderboardEntry> {
         let client = crate::client::get_client();
-        let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
+        
+        // Get the leaderboard handle without holding the lock across await
+        let leaderboard = {
+            let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
+            handles.get(&leaderboard_name).copied()
+        };
 
-        if let Some(leaderboard) = handles.get(&leaderboard_name) {
+        if let Some(leaderboard) = leaderboard {
             let request_type = match data_request {
                 DataRequest::Global => LeaderboardDataRequest::Global,
                 DataRequest::GlobalAroundUser => LeaderboardDataRequest::GlobalAroundUser,
@@ -204,11 +218,10 @@ pub mod leaderboards {
             let mut tx = Some(tx);
 
             client.user_stats().download_leaderboard_entries(
-                leaderboard,
+                &leaderboard,
                 request_type,
-                range_start as usize,
-                range_end as usize,
-                0,
+                range_start,
+                range_end,
                 move |result| {
                     if let Some(sender) = tx.take() {
                         let _ = sender.send(result);
@@ -231,7 +244,7 @@ pub mod leaderboards {
         let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
 
         if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            client.user_stats().get_leaderboard_name(leaderboard)
+            Some(client.user_stats().get_leaderboard_name(leaderboard))
         } else {
             None
         }
@@ -255,11 +268,11 @@ pub mod leaderboards {
         let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
 
         if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            let sort_method = client.user_stats().get_leaderboard_sort_method(leaderboard);
-            Some(match sort_method {
-                LeaderboardSortMethod::Ascending => SortMethod::Ascending,
-                LeaderboardSortMethod::Descending => SortMethod::Descending,
-            })
+            match client.user_stats().get_leaderboard_sort_method(leaderboard) {
+                Some(LeaderboardSortMethod::Ascending) => Some(SortMethod::Ascending),
+                Some(LeaderboardSortMethod::Descending) => Some(SortMethod::Descending),
+                None => None,
+            }
         } else {
             None
         }
@@ -271,12 +284,12 @@ pub mod leaderboards {
         let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
 
         if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            let display_type = client.user_stats().get_leaderboard_display_type(leaderboard);
-            Some(match display_type {
-                LeaderboardDisplayType::Numeric => DisplayType::Numeric,
-                LeaderboardDisplayType::TimeSeconds => DisplayType::TimeSeconds,
-                LeaderboardDisplayType::TimeMilliSeconds => DisplayType::TimeMilliSeconds,
-            })
+            match client.user_stats().get_leaderboard_display_type(leaderboard) {
+                Some(LeaderboardDisplayType::Numeric) => Some(DisplayType::Numeric),
+                Some(LeaderboardDisplayType::TimeSeconds) => Some(DisplayType::TimeSeconds),
+                Some(LeaderboardDisplayType::TimeMilliSeconds) => Some(DisplayType::TimeMilliSeconds),
+                None => None,
+            }
         } else {
             None
         }
