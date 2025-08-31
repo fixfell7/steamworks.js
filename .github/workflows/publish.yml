@@ -128,7 +128,7 @@ jobs:
                   echo "- Root directory:" && ls
                   echo "- Dist directory:" && ls -R dist
 
-            - name: Publish to npm
-              uses: JS-DevTools/npm-publish@v1
-              with:
-                  token: ${{ secrets.NPM_TOKEN }}
+            # - name: Publish to npm
+            #   uses: JS-DevTools/npm-publish@v1
+            #   with:
+            #       token: ${{ secrets.NPM_TOKEN }}
