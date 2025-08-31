@@ -6,8 +6,9 @@ pub mod leaderboards {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use steamworks::{
-        LeaderboardDisplayType, LeaderboardEntry as SteamLeaderboardEntry, Leaderboard, 
-        LeaderboardSortMethod, SteamId, LeaderboardDataRequest, UploadScoreMethod as SteamUploadScoreMethod,
+        Leaderboard, LeaderboardDataRequest, LeaderboardDisplayType,
+        LeaderboardEntry as SteamLeaderboardEntry, LeaderboardSortMethod, SteamId,
+        UploadScoreMethod as SteamUploadScoreMethod,
     };
     use tokio::sync::oneshot;
 
@@ -151,7 +152,7 @@ pub mod leaderboards {
         details: Option<Vec<i32>>,
     ) -> Option<LeaderboardEntry> {
         let client = crate::client::get_client();
-        
+
         // Get the leaderboard handle without holding the lock across await
         let leaderboard = {
             let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
@@ -200,7 +201,7 @@ pub mod leaderboards {
         range_end: i32,
     ) -> Vec<LeaderboardEntry> {
         let client = crate::client::get_client();
-        
+
         // Get the leaderboard handle without holding the lock across await
         let leaderboard = {
             let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
