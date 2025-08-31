@@ -286,10 +286,15 @@ pub mod leaderboards {
         let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
 
         if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            match client.user_stats().get_leaderboard_display_type(leaderboard) {
+            match client
+                .user_stats()
+                .get_leaderboard_display_type(leaderboard)
+            {
                 Some(LeaderboardDisplayType::Numeric) => Some(DisplayType::Numeric),
                 Some(LeaderboardDisplayType::TimeSeconds) => Some(DisplayType::TimeSeconds),
-                Some(LeaderboardDisplayType::TimeMilliSeconds) => Some(DisplayType::TimeMilliSeconds),
+                Some(LeaderboardDisplayType::TimeMilliSeconds) => {
+                    Some(DisplayType::TimeMilliSeconds)
+                }
                 None => None,
             }
         } else {
