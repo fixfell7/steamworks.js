@@ -2,13 +2,14 @@ use napi_derive::napi;
 
 #[napi]
 pub mod leaderboards {
-    use napi::bindgen_prelude::{BigInt, Buffer};
+    use napi::bindgen_prelude::BigInt;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use steamworks::{
-        LeaderboardDisplayType, LeaderboardSortMethod, 
-        SteamId, LeaderboardEntry, LeaderboardId
+        LeaderboardDisplayType, LeaderboardEntry, Leaderboard, LeaderboardSortMethod, SteamId,
+        LeaderboardDataRequest, UploadScoreMethod,
     };
+    use tokio::sync::oneshot;
 
     #[napi(object)]
     pub struct LeaderboardEntry {
@@ -20,17 +21,15 @@ pub mod leaderboards {
 
     #[napi]
     pub enum SortMethod {
-        None,
         Ascending,
         Descending,
     }
 
     #[napi]
     pub enum DisplayType {
-        None,
         Numeric,
         TimeSeconds,
-        TimeMilliseconds,
+        TimeMilliSeconds,
     }
 
     #[napi]
@@ -38,26 +37,23 @@ pub mod leaderboards {
         Global,
         GlobalAroundUser,
         Friends,
-        Users,
     }
 
     #[napi]
     pub enum UploadScoreMethod {
-        None,
         KeepBest,
         ForceUpdate,
     }
 
     // Static storage for leaderboard handles
     lazy_static::lazy_static! {
-        static ref LEADERBOARD_HANDLES: Arc<Mutex<HashMap<String, LeaderboardId>>> = 
+        static ref LEADERBOARD_HANDLES: Arc<Mutex<HashMap<String, Leaderboard>>> =
             Arc::new(Mutex::new(HashMap::new()));
     }
 
     impl From<SortMethod> for LeaderboardSortMethod {
         fn from(method: SortMethod) -> Self {
             match method {
-                SortMethod::None => LeaderboardSortMethod::None,
                 SortMethod::Ascending => LeaderboardSortMethod::Ascending,
                 SortMethod::Descending => LeaderboardSortMethod::Descending,
             }
@@ -67,10 +63,9 @@ pub mod leaderboards {
     impl From<DisplayType> for LeaderboardDisplayType {
         fn from(display_type: DisplayType) -> Self {
             match display_type {
-                DisplayType::None => LeaderboardDisplayType::None,
                 DisplayType::Numeric => LeaderboardDisplayType::Numeric,
                 DisplayType::TimeSeconds => LeaderboardDisplayType::TimeSeconds,
-                DisplayType::TimeMilliseconds => LeaderboardDisplayType::TimeMilliseconds,
+                DisplayType::TimeMilliSeconds => LeaderboardDisplayType::TimeMilliSeconds,
             }
         }
     }
@@ -80,7 +75,7 @@ pub mod leaderboards {
             LeaderboardEntry {
                 global_rank: entry.global_rank,
                 score: entry.score,
-                steam_id: BigInt::from(entry.steam_id.raw()),
+                steam_id: BigInt::from(entry.user.raw()),
                 details: entry.details,
             }
         }
@@ -89,14 +84,22 @@ pub mod leaderboards {
     #[napi]
     pub async fn find_leaderboard(name: String) -> Option<String> {
         let client = crate::client::get_client();
-        
-        match client.user_stats().find_leaderboard(&name).await {
-            Ok(leaderboard) => {
-                let mut handles = LEADERBOARD_HANDLES.lock().unwrap();
+        let (tx, rx) = oneshot::channel();
+        let mut tx = Some(tx);
+
+        client.user_stats().find_leaderboard(&name, move |result| {
+            if let Some(sender) = tx.take() {
+                let _ = sender.send(result);
+            }
+        });
+
+        match rx.await {
+            Ok(Ok(leaderboard)) => {
+                let mut handles = (*LEADERBOARD_HANDLES).lock().unwrap();
                 handles.insert(name.clone(), leaderboard);
                 Some(name)
             }
-            Err(_) => None,
+            _ => None,
         }
     }
 
@@ -107,18 +110,27 @@ pub mod leaderboards {
         display_type: DisplayType,
     ) -> Option<String> {
         let client = crate::client::get_client();
-        
-        match client.user_stats().find_or_create_leaderboard(
+        let (tx, rx) = oneshot::channel();
+        let mut tx = Some(tx);
+
+        client.user_stats().find_or_create_leaderboard(
             &name,
             sort_method.into(),
             display_type.into(),
-        ).await {
-            Ok(leaderboard) => {
-                let mut handles = LEADERBOARD_HANDLES.lock().unwrap();
+            move |result| {
+                if let Some(sender) = tx.take() {
+                    let _ = sender.send(result);
+                }
+            },
+        );
+
+        match rx.await {
+            Ok(Ok(leaderboard)) => {
+                let mut handles = (*LEADERBOARD_HANDLES).lock().unwrap();
                 handles.insert(name.clone(), leaderboard);
                 Some(name)
             }
-            Err(_) => None,
+            _ => None,
         }
     }
 
@@ -130,24 +142,32 @@ pub mod leaderboards {
         details: Option<Vec<i32>>,
     ) -> Option<LeaderboardEntry> {
         let client = crate::client::get_client();
-        let handles = LEADERBOARD_HANDLES.lock().unwrap();
-        
+        let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
+
         if let Some(leaderboard) = handles.get(&leaderboard_name) {
             let method = match upload_method {
-                UploadScoreMethod::None => steamworks::UploadScoreMethod::None,
-                UploadScoreMethod::KeepBest => steamworks::UploadScoreMethod::KeepBest,
-                UploadScoreMethod::ForceUpdate => steamworks::UploadScoreMethod::ForceUpdate,
+                UploadScoreMethod::KeepBest => UploadScoreMethod::KeepBest,
+                UploadScoreMethod::ForceUpdate => UploadScoreMethod::ForceUpdate,
             };
 
             let score_details = details.unwrap_or_default();
-            
-            match client.user_stats().upload_leaderboard_score(
-                *leaderboard,
+            let (tx, rx) = oneshot::channel();
+            let mut tx = Some(tx);
+
+            client.user_stats().upload_leaderboard_score(
+                leaderboard,
                 method,
                 score,
                 &score_details,
-            ).await {
-                Ok(result) => {
+                move |result| {
+                    if let Some(sender) = tx.take() {
+                        let _ = sender.send(result);
+                    }
+                },
+            );
+
+            match rx.await {
+                Ok(Ok(result)) => {
                     // Create a LeaderboardEntry from the result
                     Some(LeaderboardEntry {
                         global_rank: result.global_rank_new,
@@ -156,7 +176,7 @@ pub mod leaderboards {
                         details: score_details,
                     })
                 }
-                Err(_) => None,
+                _ => None,
             }
         } else {
             None
@@ -171,54 +191,34 @@ pub mod leaderboards {
         range_end: i32,
     ) -> Vec<LeaderboardEntry> {
         let client = crate::client::get_client();
-        let handles = LEADERBOARD_HANDLES.lock().unwrap();
-        
+        let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
+
         if let Some(leaderboard) = handles.get(&leaderboard_name) {
             let request_type = match data_request {
-                DataRequest::Global => steamworks::LeaderboardDataRequest::Global,
-                DataRequest::GlobalAroundUser => steamworks::LeaderboardDataRequest::GlobalAroundUser,
-                DataRequest::Friends => steamworks::LeaderboardDataRequest::Friends,
-                DataRequest::Users => steamworks::LeaderboardDataRequest::Users,
+                DataRequest::Global => LeaderboardDataRequest::Global,
+                DataRequest::GlobalAroundUser => LeaderboardDataRequest::GlobalAroundUser,
+                DataRequest::Friends => LeaderboardDataRequest::Friends,
             };
 
-            match client.user_stats().download_leaderboard_entries(
-                *leaderboard,
+            let (tx, rx) = oneshot::channel();
+            let mut tx = Some(tx);
+
+            client.user_stats().download_leaderboard_entries(
+                leaderboard,
                 request_type,
-                range_start,
-                range_end,
-            ).await {
-                Ok(entries) => {
-                    entries.into_iter().map(LeaderboardEntry::from).collect()
-                }
-                Err(_) => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        }
-    }
+                range_start as usize,
+                range_end as usize,
+                0,
+                move |result| {
+                    if let Some(sender) = tx.take() {
+                        let _ = sender.send(result);
+                    }
+                },
+            );
 
-    #[napi]
-    pub async fn download_scores_for_users(
-        leaderboard_name: String,
-        steam_ids: Vec<BigInt>,
-    ) -> Vec<LeaderboardEntry> {
-        let client = crate::client::get_client();
-        let handles = LEADERBOARD_HANDLES.lock().unwrap();
-        
-        if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            let user_ids: Vec<SteamId> = steam_ids
-                .iter()
-                .map(|id| SteamId::from_raw(id.get_u64().1))
-                .collect();
-
-            match client.user_stats().download_leaderboard_entries_for_users(
-                *leaderboard,
-                &user_ids,
-            ).await {
-                Ok(entries) => {
-                    entries.into_iter().map(LeaderboardEntry::from).collect()
-                }
-                Err(_) => Vec::new(),
+            match rx.await {
+                Ok(Ok(entries)) => entries.into_iter().map(LeaderboardEntry::from).collect(),
+                _ => Vec::new(),
             }
         } else {
             Vec::new()
@@ -228,10 +228,10 @@ pub mod leaderboards {
     #[napi]
     pub fn get_leaderboard_name(leaderboard_name: String) -> Option<String> {
         let client = crate::client::get_client();
-        let handles = LEADERBOARD_HANDLES.lock().unwrap();
-        
+        let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
+
         if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            client.user_stats().leaderboard_name(*leaderboard)
+            client.user_stats().get_leaderboard_name(leaderboard)
         } else {
             None
         }
@@ -240,10 +240,10 @@ pub mod leaderboards {
     #[napi]
     pub fn get_leaderboard_entry_count(leaderboard_name: String) -> Option<i32> {
         let client = crate::client::get_client();
-        let handles = LEADERBOARD_HANDLES.lock().unwrap();
-        
+        let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
+
         if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            Some(client.user_stats().leaderboard_entry_count(*leaderboard))
+            Some(client.user_stats().get_leaderboard_entry_count(leaderboard))
         } else {
             None
         }
@@ -252,12 +252,11 @@ pub mod leaderboards {
     #[napi]
     pub fn get_leaderboard_sort_method(leaderboard_name: String) -> Option<SortMethod> {
         let client = crate::client::get_client();
-        let handles = LEADERBOARD_HANDLES.lock().unwrap();
-        
+        let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
+
         if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            let sort_method = client.user_stats().leaderboard_sort_method(*leaderboard);
+            let sort_method = client.user_stats().get_leaderboard_sort_method(leaderboard);
             Some(match sort_method {
-                LeaderboardSortMethod::None => SortMethod::None,
                 LeaderboardSortMethod::Ascending => SortMethod::Ascending,
                 LeaderboardSortMethod::Descending => SortMethod::Descending,
             })
@@ -269,15 +268,14 @@ pub mod leaderboards {
     #[napi]
     pub fn get_leaderboard_display_type(leaderboard_name: String) -> Option<DisplayType> {
         let client = crate::client::get_client();
-        let handles = LEADERBOARD_HANDLES.lock().unwrap();
-        
+        let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
+
         if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            let display_type = client.user_stats().leaderboard_display_type(*leaderboard);
+            let display_type = client.user_stats().get_leaderboard_display_type(leaderboard);
             Some(match display_type {
-                LeaderboardDisplayType::None => DisplayType::None,
                 LeaderboardDisplayType::Numeric => DisplayType::Numeric,
                 LeaderboardDisplayType::TimeSeconds => DisplayType::TimeSeconds,
-                LeaderboardDisplayType::TimeMilliseconds => DisplayType::TimeMilliseconds,
+                LeaderboardDisplayType::TimeMilliSeconds => DisplayType::TimeMilliSeconds,
             })
         } else {
             None
@@ -285,30 +283,14 @@ pub mod leaderboards {
     }
 
     #[napi]
-    pub async fn attach_leaderboard_ugc(
-        leaderboard_name: String,
-        ugc_handle: BigInt,
-    ) -> bool {
-        let client = crate::client::get_client();
-        let handles = LEADERBOARD_HANDLES.lock().unwrap();
-        
-        if let Some(leaderboard) = handles.get(&leaderboard_name) {
-            let ugc = steamworks::UGCHandle::from_raw(ugc_handle.get_u64().1);
-            client.user_stats().attach_leaderboard_ugc(*leaderboard, ugc).await.is_ok()
-        } else {
-            false
-        }
-    }
-
-    #[napi]
     pub fn clear_leaderboard_handle(leaderboard_name: String) -> bool {
-        let mut handles = LEADERBOARD_HANDLES.lock().unwrap();
+        let mut handles = (*LEADERBOARD_HANDLES).lock().unwrap();
         handles.remove(&leaderboard_name).is_some()
     }
 
     #[napi]
     pub fn get_cached_leaderboard_names() -> Vec<String> {
-        let handles = LEADERBOARD_HANDLES.lock().unwrap();
+        let handles = (*LEADERBOARD_HANDLES).lock().unwrap();
         handles.keys().cloned().collect()
     }
 }

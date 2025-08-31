@@ -122,41 +122,35 @@ export declare namespace leaderboards {
   }
   
   export const enum SortMethod {
-    None = 0,
-    Ascending = 1,
-    Descending = 2
+    Ascending = 0,
+    Descending = 1
   }
   
   export const enum DisplayType {
-    None = 0,
-    Numeric = 1,
-    TimeSeconds = 2,
-    TimeMilliseconds = 3
+    Numeric = 0,
+    TimeSeconds = 1,
+    TimeMilliSeconds = 2
   }
   
   export const enum DataRequest {
     Global = 0,
     GlobalAroundUser = 1,
-    Friends = 2,
-    Users = 3
+    Friends = 2
   }
   
   export const enum UploadScoreMethod {
-    None = 0,
-    KeepBest = 1,
-    ForceUpdate = 2
+    KeepBest = 0,
+    ForceUpdate = 1
   }
 
   export function findLeaderboard(name: string): Promise<string | null>
   export function findOrCreateLeaderboard(name: string, sortMethod: SortMethod, displayType: DisplayType): Promise<string | null>
   export function uploadScore(leaderboardName: string, score: number, uploadMethod: UploadScoreMethod, details?: Array<number>): Promise<LeaderboardEntry | null>
   export function downloadScores(leaderboardName: string, dataRequest: DataRequest, rangeStart: number, rangeEnd: number): Promise<Array<LeaderboardEntry>>
-  export function downloadScoresForUsers(leaderboardName: string, steamIds: Array<bigint>): Promise<Array<LeaderboardEntry>>
   export function getLeaderboardName(leaderboardName: string): string | null
   export function getLeaderboardEntryCount(leaderboardName: string): number | null
   export function getLeaderboardSortMethod(leaderboardName: string): SortMethod | null
   export function getLeaderboardDisplayType(leaderboardName: string): DisplayType | null
-  export function attachLeaderboardUgc(leaderboardName: string, ugcHandle: bigint): Promise<boolean>
   export function clearLeaderboardHandle(leaderboardName: string): boolean
   export function getCachedLeaderboardNames(): Array<string>
 }
